@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Document, Page, pdfjs } from 'react-pdf'
 import 'react-pdf/dist/Page/TextLayer.css'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
+import Mark from 'mark.js'
 
 // Use the bundled pdf.js worker
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -13,39 +14,43 @@ export default function PDFViewer({ url, queryTokens, inDocQuery, onHitsFound })
   const [numPages, setNumPages] = useState(null)
   const [error, setError] = useState(null)
   const containerRef = useRef(null)
+  const markInstanceRef = useRef(null)
   const [scale] = useState(1.3)
 
   // Build the set of terms to highlight (query tokens + in-doc search term)
   const highlightTerms = [
     ...(queryTokens ?? []),
-    ...(inDocQuery?.trim() ? [inDocQuery.trim().toLowerCase()] : []),
+    ...(inDocQuery?.trim() ? [inDocQuery.trim()] : []),
   ].filter(Boolean)
 
-  // After pages render, apply highlight marks to the text layer
+  // After pages render, apply highlight marks using mark.js
   useEffect(() => {
     if (!containerRef.current || highlightTerms.length === 0) return
 
     // Small delay to allow PDF.js text layer to finish painting
     const timer = setTimeout(() => {
-      const spans = containerRef.current.querySelectorAll('.react-pdf__Page__textContent span')
-      let hitCount = 0
-      const hitEls = []
+      if (!markInstanceRef.current) {
+        markInstanceRef.current = new Mark(containerRef.current)
+      }
+      const mark = markInstanceRef.current
+      mark.unmark()
 
-      spans.forEach(span => {
-        const text = span.textContent || ''
-        const lower = text.toLowerCase()
-        const matched = highlightTerms.some(t => lower.includes(t))
-        if (matched) {
-          span.classList.add('pdf-highlight')
-          hitCount++
-          hitEls.push(span)
-        } else {
-          span.classList.remove('pdf-highlight')
-        }
-      })
+      if (highlightTerms.length === 0) {
+        onHitsFound?.(0, () => {})
+        return
+      }
 
-      onHitsFound?.(hitCount, (idx) => {
-        hitEls[idx]?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      mark.mark(highlightTerms, {
+        separateWordSearch: false,
+        accuracy: 'exactly',
+        caseSensitive: false,
+        done: () => {
+          const marks = containerRef.current.querySelectorAll('mark')
+          onHitsFound?.(marks.length, (idx) => {
+            marks[idx]?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            marks.forEach((m, i) => m.classList.toggle('pdf-current', i === idx))
+          })
+        },
       })
     }, 400)
 
@@ -64,10 +69,15 @@ export default function PDFViewer({ url, queryTokens, inDocQuery, onHitsFound })
   return (
     <div className="pdf-viewer" ref={containerRef}>
       <style>{`
-        .react-pdf__Page__textContent span.pdf-highlight {
+        .pdf-viewer mark {
           background: rgba(255, 224, 130, 0.7);
           border-radius: 2px;
-          mix-blend-mode: multiply;
+          padding: 0 2px;
+          color: inherit;
+        }
+        .pdf-viewer mark.pdf-current {
+          background: rgba(255, 193, 7, 0.9);
+          font-weight: bold;
         }
       `}</style>
       <div className="pdf-pages">

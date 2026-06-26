@@ -5,6 +5,7 @@ import ResultsList from "./components/ResultsList"
 import DocumentPreview from "./components/DocumentPreview"
 import Topics from "./components/Topics"
 import DocumentTypes from "./components/DocumentTypes"
+import DocumentUpload from "./components/DocumentUpload"
 
 const API = "http://localhost:8000"
 
@@ -20,14 +21,14 @@ export default function App() {
   const [selectedDocType, setSelectedDocType] = useState(null)
   const [query, setQuery] = useState("")
 
-  // Trigger search whenever query, selectedTopic, or selectedDocType changes
+  // Trigger search only when filters (pills) change, not on query text changes
   useEffect(() => {
-    performSearch()
-  }, [query, selectedTopic, selectedDocType])
+    doSearch(query, selectedTopic, selectedDocType)
+  }, [selectedTopic, selectedDocType])
 
-  async function performSearch() {
+  async function doSearch(queryParam, topicParam, docTypeParam) {
     // Don't search if there's no query AND no filters
-    if (!query.trim() && !selectedTopic && !selectedDocType) {
+    if (!queryParam.trim() && !topicParam && !docTypeParam) {
       setResults([])
       setStatusMsg("Ready — paste a query or click filters")
       return
@@ -41,9 +42,9 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          query: query.trim(),
-          topic_filter: selectedTopic,
-          doc_type_filter: selectedDocType,
+          query: queryParam.trim(),
+          topic_filter: topicParam,
+          doc_type_filter: docTypeParam,
         }),
       })
       if (!res.ok) throw new Error(await res.text())
@@ -61,7 +62,7 @@ export default function App() {
 
   function handleSearch(searchQuery) {
     setQuery(searchQuery)
-    // useEffect will trigger performSearch automatically
+    doSearch(searchQuery, selectedTopic, selectedDocType)
   }
 
   async function handleIndex() {
@@ -171,6 +172,7 @@ export default function App() {
         >
           📤 Import Corrections
         </button>
+        <DocumentUpload apiBase={API} onUploadSuccess={handleIndex} />
       </div>
 
       <div className="workspace">

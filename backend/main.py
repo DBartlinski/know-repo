@@ -4,19 +4,22 @@ FastAPI backend for the PAO Document Search application.
 
 import logging
 import mimetypes
+import sqlite3
 from pathlib import Path
 from typing import Optional
+from datetime import datetime
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from config import DOC_FOLDER, MAX_RESULTS
+from config import DOC_FOLDER, MAX_RESULTS, DB_PATH, PREDEFINED_TOPICS, PREDEFINED_DOCUMENT_TYPES
 from indexer import init_db, run_index
 from search import get_document_by_id, last_index_time, search_documents, get_all_topics, get_all_document_types
 from corrections import export_documents_csv, import_corrections_csv
+from metadata_utils import add_header_to_docx, add_header_to_pdf, format_metadata_header
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -145,6 +148,117 @@ def import_corrections(data: CorrectionsImport):
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
+
+
+@app.get("/api/metadata-options")
+def get_metadata_options():
+    """Return available topics and document types for form dropdowns."""
+    return {
+        "topics": PREDEFINED_TOPICS,
+        "document_types": PREDEFINED_DOCUMENT_TYPES
+    }
+
+
+@app.post("/api/upload-document")
+async def upload_document(
+    file: UploadFile = File(...),
+    title: str = Form(...),
+    topic: str = Form(...),
+    doc_type: str = Form(...),
+    created_by: str = Form(default="User Upload")
+):
+    """
+    Handle document upload with metadata.
+    1. Validate inputs
+    2. Save file to RFI-Docs folder
+    3. Add metadata header/cover page
+    4. Add to database with provided metadata
+    """
+    
+    # Validate topic and doc_type
+    if topic not in PREDEFINED_TOPICS:
+        raise HTTPException(status_code=400, detail=f"Invalid topic: {topic}")
+    if doc_type not in PREDEFINED_DOCUMENT_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid document type: {doc_type}")
+    
+    # Validate file extension
+    file_ext = Path(file.filename).suffix.lower()
+    if file_ext not in {'.docx', '.pdf', '.xlsx'}:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_ext}. Supported: .docx, .pdf, .xlsx")
+    
+    try:
+        # Save uploaded file
+        file_path = DOC_FOLDER / file.filename
+        
+        # Check if file already exists
+        if file_path.exists():
+            raise HTTPException(status_code=400, detail=f"File already exists: {file.filename}")
+        
+        # Write file to disk
+        contents = await file.read()
+        with open(file_path, 'wb') as f:
+            f.write(contents)
+        
+        # Prepare metadata
+        metadata = {
+            "name": file.filename,
+            "title": title,
+            "topic": topic,
+            "doc_type": doc_type,
+            "created": datetime.now().strftime('%Y-%m-%d'),
+            "created_by": created_by
+        }
+        
+        # Add metadata header/cover page based on file type
+        if file_ext == '.docx':
+            add_header_to_docx(str(file_path), metadata)
+        elif file_ext == '.pdf':
+            add_header_to_pdf(str(file_path), metadata)
+        # For .xlsx, we skip adding headers for now
+        
+        # Add to database
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Insert document
+        cursor.execute(
+            "INSERT INTO documents (filename, title) VALUES (?, ?)",
+            (file.filename, title)
+        )
+        doc_id = cursor.lastrowid
+        
+        # Insert topic
+        cursor.execute(
+            "INSERT INTO document_topics (doc_id, topic) VALUES (?, ?)",
+            (doc_id, topic)
+        )
+        
+        # Insert document type
+        cursor.execute(
+            "INSERT INTO document_types (doc_id, doc_type) VALUES (?, ?)",
+            (doc_id, doc_type)
+        )
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Document uploaded: {file.filename} (ID: {doc_id})")
+        
+        return {
+            "success": True,
+            "document_id": doc_id,
+            "filename": file.filename,
+            "message": f"Document '{file.filename}' uploaded and indexed successfully"
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Clean up file if something went wrong
+        if file_path.exists():
+            file_path.unlink()
+        logger.error(f"Upload failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 
 @app.get("/api/document/{doc_id}")
